@@ -384,14 +384,11 @@ def search_products_db(
         with get_db_connection() as conn:
             cursor = conn.cursor()
             
+            # Строим базовый запрос
             query = "SELECT * FROM products WHERE 1=1"
             params = []
             
-            if product_name:
-                query += " AND (product_name LIKE ? OR product_sku LIKE ?)"
-                search_term = f"%{product_name}%"
-                params.extend([search_term, search_term])
-            
+            # Фильтры по category и warehouse_id применяем в SQL
             if category:
                 query += " AND category = ?"
                 params.append(category)
@@ -400,13 +397,35 @@ def search_products_db(
                 query += " AND warehouse_id = ?"
                 params.append(warehouse_id)
             
-            query += " ORDER BY product_name LIMIT ?"
-            params.append(limit)
+            query += " ORDER BY product_name"
+            
+            logger.debug(f"SQL запрос: {query}")
+            logger.debug(f"Параметры: {params}")
             
             cursor.execute(query, params)
             rows = cursor.fetchall()
             
-            return [dict(row) for row in rows]
+            # Преобразуем в список словарей
+            all_products = [dict(row) for row in rows]
+            
+            # Фильтруем по product_name в Python (для правильной работы с кириллицей)
+            if product_name:
+                search_term_lower = product_name.lower().strip()
+                filtered_products = []
+                for product in all_products:
+                    product_name_lower = product["product_name"].lower()
+                    product_sku_lower = product["product_sku"].lower()
+                    if (search_term_lower in product_name_lower or 
+                        search_term_lower in product_sku_lower):
+                        filtered_products.append(product)
+                results = filtered_products[:limit]
+                logger.debug(f"Поиск товаров: product_name='{product_name}', найдено: {len(results)}")
+            else:
+                results = all_products[:limit]
+            
+            logger.debug(f"Итого найдено товаров в БД: {len(results)}")
+            
+            return results
     except Exception as e:
         logger.error(f"Ошибка при поиске товаров: {str(e)}")
         raise

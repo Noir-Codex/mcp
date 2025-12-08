@@ -266,34 +266,35 @@ async def _search_products_impl(params: SearchProductsParams) -> ProductSearchRe
     try:
         logger.info(f"Поиск товаров по названию: {params.product_name}")
         
-        # Поиск в БД
-        products = db_search_products(
-            product_name=params.product_name,
-            warehouse_id=params.warehouse_id,
-            limit=100
-        )
+        search_name = params.product_name.lower().strip()
+        normalized_name = _normalize_product_name(search_name)
         
         found_products = []
-        for product in products:
-            found_products.append({
-                "sku": product["product_sku"],
-                "product_name": product["product_name"],
-                "current_quantity": product["current_quantity"],
-                "status": "in_stock" if product["current_quantity"] > 0 else "out_of_stock",
-                "unit": product.get("unit", "шт")
-            })
+        seen_skus = set()
         
-        # Если не нашли, пробуем нормализовать название и искать снова
-        if not found_products:
-            search_name = params.product_name.lower().strip()
-            normalized_name = _normalize_product_name(search_name)
-            if normalized_name != search_name:
-                products = db_search_products(
-                    product_name=normalized_name,
-                    warehouse_id=params.warehouse_id,
-                    limit=100
-                )
-                for product in products:
+        # Если название было нормализовано, используем нормализованное для поиска
+        # Иначе используем оригинальное название
+        search_terms = []
+        if normalized_name != search_name:
+            logger.info(f"Название нормализовано: '{search_name}' -> '{normalized_name}'")
+            search_terms.append(normalized_name)
+        search_terms.append(params.product_name)  # Также пробуем оригинальное название
+        
+        # Убираем дубликаты
+        search_terms = list(dict.fromkeys(search_terms))
+        
+        # Ищем по всем вариантам названия
+        for search_term in search_terms:
+            logger.debug(f"Поиск товаров с термином: '{search_term}'")
+            products = db_search_products(
+                product_name=search_term,
+                warehouse_id=params.warehouse_id,
+                limit=100
+            )
+            
+            # Добавляем найденные товары
+            for product in products:
+                if product["product_sku"] not in seen_skus:
                     found_products.append({
                         "sku": product["product_sku"],
                         "product_name": product["product_name"],
@@ -301,6 +302,10 @@ async def _search_products_impl(params: SearchProductsParams) -> ProductSearchRe
                         "status": "in_stock" if product["current_quantity"] > 0 else "out_of_stock",
                         "unit": product.get("unit", "шт")
                     })
+                    seen_skus.add(product["product_sku"])
+                    logger.debug(f"Найден товар: {product['product_name']} (SKU: {product['product_sku']})")
+        
+        logger.info(f"Найдено товаров: {len(found_products)}")
         
         return ProductSearchResult(
             found=len(found_products) > 0,
@@ -326,21 +331,23 @@ async def _get_inventory_status_impl(params: GetInventoryStatusParams) -> Invent
         
         # Если не нашли по SKU, ищем по названию в БД
         if not product:
+            # Нормализуем название для поиска синонимов
+            search_name = product_sku.lower().strip()
+            normalized_name = _normalize_product_name(search_name)
+            
+            # Пробуем поиск с оригинальным названием
             products = db_search_products(product_name=product_sku, limit=1)
             if products:
                 product = products[0]
                 product_sku = product["product_sku"]
                 logger.info(f"Найден товар по названию: {product_sku}")
-            else:
-                # Пробуем нормализовать название
-                search_name = product_sku.lower().strip()
-                normalized_name = _normalize_product_name(search_name)
-                if normalized_name != search_name:
-                    products = db_search_products(product_name=normalized_name, limit=1)
-                    if products:
-                        product = products[0]
-                        product_sku = product["product_sku"]
-                        logger.info(f"Найден товар по нормализованному названию: {product_sku}")
+            # Если не нашли и название было нормализовано, пробуем с нормализованным названием
+            elif normalized_name != search_name:
+                products = db_search_products(product_name=normalized_name, limit=1)
+                if products:
+                    product = products[0]
+                    product_sku = product["product_sku"]
+                    logger.info(f"Найден товар по нормализованному названию: {product_sku}")
         
         # Попытка получить данные из внешнего API
         use_external_api = (WAREHOUSE_API_URL and 
@@ -387,14 +394,24 @@ async def _get_inventory_status_impl(params: GetInventoryStatusParams) -> Invent
                 )
         
         # Получение из базы данных
-        product = db_get_product(product_sku)
         if not product:
-            # Попытка поиска по названию в БД
+            # Если товар еще не найден, пробуем поиск по названию с нормализацией
+            search_name = params.product_sku.lower().strip()
+            normalized_name = _normalize_product_name(search_name)
+            
+            # Пробуем поиск с оригинальным названием
             products = db_search_products(product_name=params.product_sku, limit=1)
             if products:
                 product = products[0]
                 product_sku = product["product_sku"]
-            else:
+            # Если не нашли и название было нормализовано, пробуем с нормализованным названием
+            elif normalized_name != search_name:
+                products = db_search_products(product_name=normalized_name, limit=1)
+                if products:
+                    product = products[0]
+                    product_sku = product["product_sku"]
+            
+            if not product:
                 raise ValueError(f"Товар '{params.product_sku}' не найден. Используйте поиск товаров для получения списка доступных товаров.")
         
         current_qty = product["current_quantity"]
