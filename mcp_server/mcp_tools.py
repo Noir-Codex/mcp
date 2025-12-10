@@ -2,8 +2,9 @@
 
 import os
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from datetime import datetime
+from difflib import SequenceMatcher
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field
 import httpx
@@ -29,92 +30,11 @@ mcp = FastMCP("Warehouse Inventory MCP Server")
 WAREHOUSE_API_URL = os.getenv("WAREHOUSE_API_URL", "http://localhost:8001")
 WAREHOUSE_API_KEY = os.getenv("WAREHOUSE_API_KEY", "")
 
-# Временное хранилище для демонстрации (в реальном проекте используется внешний API)
-_inventory_storage = {
-    "MORK-001": {
-        "product_name": "Морковь",
-        "current_quantity": 150,
-        "min_quantity": 50,
-        "max_quantity": 500,
-        "warehouse_id": "WH001",
-        "category": "овощи",
-        "unit": "кг"
-    },
-    "KART-001": {
-        "product_name": "Картофель",
-        "current_quantity": 200,
-        "min_quantity": 100,
-        "max_quantity": 1000,
-        "warehouse_id": "WH001",
-        "category": "овощи",
-        "unit": "кг"
-    },
-    "KAPU-001": {
-        "product_name": "Капуста",
-        "current_quantity": 80,
-        "min_quantity": 50,
-        "max_quantity": 300,
-        "warehouse_id": "WH001",
-        "category": "овощи",
-        "unit": "кг"
-    },
-    "LUK-001": {
-        "product_name": "Лук репчатый",
-        "current_quantity": 120,
-        "min_quantity": 50,
-        "max_quantity": 400,
-        "warehouse_id": "WH001",
-        "category": "овощи",
-        "unit": "кг"
-    },
-    "POM-001": {
-        "product_name": "Помидоры",
-        "current_quantity": 60,
-        "min_quantity": 30,
-        "max_quantity": 200,
-        "warehouse_id": "WH001",
-        "category": "овощи",
-        "unit": "кг"
-    },
-    # Старые товары для обратной совместимости
-    "ABC123": {
-        "product_name": "Товар A",
-        "current_quantity": 150,
-        "min_quantity": 50,
-        "max_quantity": 500,
-        "warehouse_id": "WH001"
-    },
-    "XYZ789": {
-        "product_name": "Товар B",
-        "current_quantity": 30,
-        "min_quantity": 100,
-        "max_quantity": 300,
-        "warehouse_id": "WH001"
-    }
-}
+# Временное хранилище для демонстрации (пустое при старте)
+_inventory_storage = {}
 
 # Индекс для быстрого поиска по названию
 _product_name_index = {item["product_name"].lower(): sku for sku, item in _inventory_storage.items()}
-
-# Словарь синонимов и разговорных названий товаров
-_product_synonyms = {
-    # Овощи
-    "картошка": "картофель",
-    "картоха": "картофель",
-    "картошечка": "картофель",
-    "морковка": "морковь",
-    "морковочка": "морковь",
-    "морков": "морковь",
-    "капустка": "капуста",
-    "капусточка": "капуста",
-    "лук": "лук репчатый",
-    "луковица": "лук репчатый",
-    "помидор": "помидоры",
-    "томат": "помидоры",
-    "томаты": "помидоры",
-    "помидорка": "помидоры",
-    "помидорчик": "помидоры",
-}
 
 # Импорт модуля базы данных для хранения заявок и товаров
 from .database import (
@@ -210,19 +130,46 @@ class ListProductsParams(BaseModel):
 
 # Вспомогательные функции
 def _normalize_product_name(search_name: str) -> str:
-    """Нормализация названия товара с учетом синонимов."""
-    search_name = search_name.lower().strip()
-    
-    # Проверка синонимов
-    if search_name in _product_synonyms:
-        return _product_synonyms[search_name]
-    
-    # Проверка частичного совпадения с синонимами
-    for synonym, canonical in _product_synonyms.items():
-        if synonym in search_name or search_name in synonym:
-            return canonical
-    
-    return search_name
+    """Нормализация названия товара."""
+    return search_name.lower().strip()
+
+
+def _fuzzy_find_products(
+    search_term: str,
+    warehouse_id: Optional[str] = None,
+    limit: int = 5,
+    threshold: float = 0.55,
+) -> List[Dict[str, Any]]:
+    """
+    Нечеткий поиск товаров по названию или SKU.
+    Возвращает отсортированный список товаров с совпадением выше порога.
+    """
+    query = search_term.lower().strip()
+    if not query:
+        return []
+
+    products = db_list_all_products(limit=1000)
+    if warehouse_id:
+        products = [p for p in products if p.get("warehouse_id") == warehouse_id]
+
+    scored: List[tuple[float, Dict[str, Any]]] = []
+    for product in products:
+        candidates = [
+            product.get("product_name", ""),
+            product.get("product_sku", ""),
+        ]
+        best_ratio = 0.0
+        for candidate in candidates:
+            cand = candidate.lower().strip()
+            if not cand:
+                continue
+            ratio = SequenceMatcher(None, query, cand).ratio()
+            best_ratio = max(best_ratio, ratio)
+        if best_ratio >= threshold:
+            scored.append((best_ratio, product))
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [p for _, p in scored[:limit]]
 
 
 async def _call_warehouse_api(endpoint: str, method: str = "GET", data: dict = None) -> dict:
@@ -305,6 +252,26 @@ async def _search_products_impl(params: SearchProductsParams) -> ProductSearchRe
                     seen_skus.add(product["product_sku"])
                     logger.debug(f"Найден товар: {product['product_name']} (SKU: {product['product_sku']})")
         
+        # Если ничего не нашли, пробуем нечеткий поиск
+        if not found_products:
+            fuzzy_products = _fuzzy_find_products(
+                search_term=params.product_name,
+                warehouse_id=params.warehouse_id,
+                limit=10,
+                threshold=0.5,
+            )
+            for product in fuzzy_products:
+                if product["product_sku"] not in seen_skus:
+                    found_products.append({
+                        "sku": product["product_sku"],
+                        "product_name": product["product_name"],
+                        "current_quantity": product["current_quantity"],
+                        "status": "in_stock" if product["current_quantity"] > 0 else "out_of_stock",
+                        "unit": product.get("unit", "шт")
+                    })
+                    seen_skus.add(product["product_sku"])
+                    logger.debug(f"Нечеткое совпадение: {product['product_name']} (SKU: {product['product_sku']})")
+
         logger.info(f"Найдено товаров: {len(found_products)}")
         
         return ProductSearchResult(
@@ -348,6 +315,19 @@ async def _get_inventory_status_impl(params: GetInventoryStatusParams) -> Invent
                     product = products[0]
                     product_sku = product["product_sku"]
                     logger.info(f"Найден товар по нормализованному названию: {product_sku}")
+
+        # Если прямой поиск не дал результата, пробуем нечеткое сопоставление
+        if not product:
+            fuzzy_products = _fuzzy_find_products(
+                search_term=params.product_sku,
+                warehouse_id=params.warehouse_id,
+                limit=1,
+                threshold=0.55,
+            )
+            if fuzzy_products:
+                product = fuzzy_products[0]
+                product_sku = product["product_sku"]
+                logger.info(f"Нечеткое совпадение товара: {product_sku}")
         
         # Попытка получить данные из внешнего API
         use_external_api = (WAREHOUSE_API_URL and 

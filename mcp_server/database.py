@@ -78,41 +78,11 @@ def init_database():
                 ON reorder_requests(product_sku)
             """)
             
-            # Миграция существующих товаров из памяти в БД (если таблица пустая)
-            cursor.execute("SELECT COUNT(*) FROM products")
-            if cursor.fetchone()[0] == 0:
-                _migrate_initial_products(cursor)
-            
             conn.commit()
             logger.info("База данных инициализирована")
     except Exception as e:
         logger.error(f"Ошибка при инициализации базы данных: {str(e)}")
         raise
-
-
-def _migrate_initial_products(cursor):
-    """Миграция начальных товаров в БД."""
-    from .mcp_tools import _inventory_storage
-    import datetime
-    
-    initial_products = [
-        ("MORK-001", "Морковь", 150, 50, 500, "кг", "овощи", "WH001"),
-        ("KART-001", "Картофель", 200, 100, 1000, "кг", "овощи", "WH001"),
-        ("KAPU-001", "Капуста", 80, 50, 300, "кг", "овощи", "WH001"),
-        ("LUK-001", "Лук репчатый", 120, 50, 400, "кг", "овощи", "WH001"),
-        ("POM-001", "Помидоры", 60, 30, 200, "кг", "овощи", "WH001"),
-    ]
-    
-    now = datetime.datetime.utcnow().isoformat() + "Z"
-    for sku, name, qty, min_qty, max_qty, unit, category, wh_id in initial_products:
-        cursor.execute("""
-            INSERT OR IGNORE INTO products 
-            (product_sku, product_name, current_quantity, min_quantity, max_quantity, 
-             unit, category, warehouse_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (sku, name, qty, min_qty, max_qty, unit, category, wh_id, now, now))
-    
-    logger.info(f"Мигрировано {len(initial_products)} товаров в БД")
 
 
 @contextmanager

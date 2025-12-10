@@ -616,6 +616,11 @@ class WarehouseAgent:
             error_msg = str(e)
             error_type = type(e).__name__
             
+            # Попытка fallback-обработки без LLM
+            fallback = self._fallback_handle(user_input)
+            if fallback:
+                return fallback
+
             # Более понятные сообщения об ошибках
             if "Connection" in error_type or "connection" in error_msg.lower() or "connect" in error_msg.lower():
                 user_message = "Не удалось подключиться к API. Проверьте интернет-соединение и попробуйте позже."
@@ -625,6 +630,8 @@ class WarehouseAgent:
                 user_message = "Ошибка авторизации. Проверьте правильность API ключа в файле .env"
             elif "429" in error_msg or "rate limit" in error_msg.lower():
                 user_message = "Превышен лимит запросов. Подождите немного и попробуйте снова."
+            elif "500" in error_msg or "InternalServerError" in error_type or "internal server error" in error_msg.lower():
+                user_message = "Внешний LLM вернул ошибку 500. Это временная проблема сервиса — попробуйте еще раз позже."
             elif "503" in error_msg or "Service Unavailable" in error_msg:
                 user_message = "Сервис временно недоступен. Попробуйте позже."
             else:
@@ -658,6 +665,42 @@ class WarehouseAgent:
         """
         result = self.process(user_input)
         return result.get("response", "Не удалось получить ответ")
+
+    def _fallback_handle(self, user_input: str) -> Optional[Dict[str, Any]]:
+        """
+        Простая деградация: при недоступности LLM пробуем маршрутизировать
+        базовые запросы напрямую на MCP-инструменты.
+        """
+        text = user_input.lower()
+        try:
+            wants_list = any(
+                key in text for key in [
+                    "список товаров", "какие товары", "что есть", "все товары",
+                    "покажи товары", "покажи список", "на складе"
+                ]
+            )
+            if wants_list:
+                result = self.mcp_client.call_tool_sync("list_products", {})
+                products = result.get("products") or []
+                names = [p.get("product_name") for p in products if p.get("product_name")]
+                if names:
+                    response = "Товары на складе: " + ", ".join(names[:20])
+                    if len(names) > 20:
+                        response += f" и ещё {len(names)-20}."
+                else:
+                    response = "В базе пока нет товаров."
+                return {
+                    "response": response,
+                    "tools_used": ["list_products"],
+                    "metadata": {
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "model": EVOLUTION_MODEL,
+                        "status": "fallback"
+                    }
+                }
+        except Exception as e:
+            logger.error(f"Ошибка fallback-обработки: {str(e)}")
+        return None
 
 
 def main():
