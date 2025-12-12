@@ -187,6 +187,6 @@ MIT License
   Email: Krivichev2000@gmail.com  
   Telegram: [@Noir_Codex](https://t.me/Noir_Codex)
 - **Пугач Илья**  
-  Email: .20022012@yandex.ru
+  Email: ya.20022012@yandex.ru
 
 
