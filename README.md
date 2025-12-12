@@ -27,8 +27,8 @@ AI-агент для управления складом и запасами с 
 1. Клонируйте репозиторий:
 
 ```bash
-git clone https://github.com/ваш-username/mcp-warehouse.git
-cd mcp-warehouse
+git clone https://github.com/Noir-Codex/mcp.git
+cd mcp
 ```
 
 2. Установите зависимости:
