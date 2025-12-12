@@ -3,7 +3,7 @@
 import os
 import sqlite3
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from contextlib import contextmanager
 
@@ -110,7 +110,7 @@ def create_reorder_request(
 ) -> Dict[str, Any]:
     """Создание заявки на пополнение в базе данных."""
     try:
-        created_at = datetime.utcnow().isoformat() + "Z"
+        created_at = datetime.now(timezone.utc).isoformat()
         
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -176,7 +176,7 @@ def update_reorder_request_status(
 ) -> bool:
     """Обновление статуса заявки."""
     try:
-        updated_at = datetime.utcnow().isoformat() + "Z"
+        updated_at = datetime.now(timezone.utc).isoformat()
         
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -247,7 +247,7 @@ def create_product(
 ) -> Dict[str, Any]:
     """Создание нового товара в базе данных."""
     try:
-        created_at = datetime.utcnow().isoformat() + "Z"
+        created_at = datetime.now(timezone.utc).isoformat()
         
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -313,7 +313,7 @@ def update_product_quantity(
 ) -> bool:
     """Обновление количества товара."""
     try:
-        updated_at = datetime.utcnow().isoformat() + "Z"
+        updated_at = datetime.now(timezone.utc).isoformat()
         
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -417,7 +417,7 @@ def update_product(
 ) -> bool:
     """Обновление информации о товаре."""
     try:
-        updated_at = datetime.utcnow().isoformat() + "Z"
+        updated_at = datetime.now(timezone.utc).isoformat()
         
         updates = []
         params = []
@@ -466,4 +466,3 @@ def update_product(
 
 # Инициализация базы данных при импорте
 init_database()
-

@@ -1,0 +1,115 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-warehouse
+  labels:
+    app: mcp-warehouse
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-warehouse
+  template:
+    metadata:
+      labels:
+        app: mcp-warehouse
+    spec:
+      containers:
+      - name: mcp-warehouse
+        image: ${DOCKER_IMAGE}
+        ports:
+        - containerPort: 8000
+        env:
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: MCP_SERVER_PORT
+          value: "8000"
+        - name: MCP_SERVER_HOST
+          value: "0.0.0.0"
+        - name: EVOLUTION_API_URL
+          valueFrom:
+            secretKeyRef:
+              name: mcp-secrets
+              key: evolution-api-url
+        - name: EVOLUTION_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: mcp-secrets
+              key: evolution-api-key
+        - name: EVOLUTION_MODEL
+          valueFrom:
+            secretKeyRef:
+              name: mcp-secrets
+              key: evolution-model
+        - name: BITRIX24_WEBHOOK_URL
+          valueFrom:
+            secretKeyRef:
+              name: mcp-secrets
+              key: bitrix24-webhook-url
+        - name: BITRIX24_ASSIGNED_BY_ID
+          valueFrom:
+            secretKeyRef:
+              name: mcp-secrets
+              key: bitrix24-assigned-by-id
+        - name: BITRIX24_PIPELINE_ID
+          valueFrom:
+            secretKeyRef:
+              name: mcp-secrets
+              key: bitrix24-pipeline-id
+        - name: BITRIX24_TASK_GROUP_ID
+          valueFrom:
+            secretKeyRef:
+              name: mcp-secrets
+              key: bitrix24-task-group-id
+        - name: BITRIX24_ENABLED
+          value: "true"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-warehouse-service
+spec:
+  selector:
+    app: mcp-warehouse
+  ports:
+  - port: 8000
+    targetPort: 8000
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mcp-warehouse-ingress
+  annotations:
+    kubernetes.io/ingress.class: nginx
+spec:
+  rules:
+  - host: ${HOSTNAME}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: mcp-warehouse-service
+            port:
+              number: 8000

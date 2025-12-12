@@ -81,4 +81,3 @@ class ProductDelete(BaseModel):
     success: bool = Field(..., description="Успешность удаления")
     product_sku: str = Field(..., description="Артикул удаленного товара")
     message: str = Field(..., description="Сообщение о результате")
-

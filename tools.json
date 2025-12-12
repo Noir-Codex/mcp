@@ -1,244 +1,101 @@
 {
-  "name": "warehouse-inventory-mcp",
-  "version": "1.0.0",
-  "description": "MCP-сервер для управления складом и запасами. Предоставляет инструменты для работы с товарами, отслеживания запасов, создания заявок на пополнение и управления складскими операциями.",
-  "tools": [
-    {
-      "name": "get_inventory_status",
-      "description": "Получает текущее состояние запасов для указанного товара. Используется для проверки наличия товара, текущего количества и статуса запасов (in_stock, low_stock, out_of_stock).",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "product_sku": {
-            "type": "string",
-            "description": "Артикул товара (SKU) или название товара"
-          },
-          "warehouse_id": {
-            "type": "string",
-            "description": "ID склада (опционально, по умолчанию основной склад)"
-          }
-        },
-        "required": ["product_sku"]
-      }
-    },
-    {
-      "name": "update_inventory",
-      "description": "Обновляет количество товара на складе (приход или расход). Используется для фиксации движения товаров: поступление на склад или отпуск со склада.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "product_sku": {
-            "type": "string",
-            "description": "Артикул товара (SKU)"
-          },
-          "quantity_change": {
-            "type": "integer",
-            "description": "Изменение количества (положительное число)"
-          },
-          "operation_type": {
-            "type": "string",
-            "enum": ["incoming", "outgoing"],
-            "description": "Тип операции: 'incoming' (приход) или 'outgoing' (расход)"
-          },
-          "warehouse_id": {
-            "type": "string",
-            "description": "ID склада (опционально)"
-          },
-          "notes": {
-            "type": "string",
-            "description": "Примечания к операции (опционально)"
-          }
-        },
-        "required": ["product_sku", "quantity_change", "operation_type"]
-      }
-    },
-    {
-      "name": "create_reorder_request",
-      "description": "Создает заявку на пополнение запасов для товаров с низким остатком. Используется для автоматизации процесса заказа товаров при достижении минимального уровня.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "product_sku": {
-            "type": "string",
-            "description": "Артикул товара (SKU)"
-          },
-          "requested_quantity": {
-            "type": "integer",
-            "description": "Запрашиваемое количество товара"
-          },
-          "priority": {
-            "type": "string",
-            "enum": ["low", "medium", "high"],
-            "description": "Приоритет заявки: 'low', 'medium', 'high' (по умолчанию 'medium')"
-          },
-          "warehouse_id": {
-            "type": "string",
-            "description": "ID склада (опционально)"
-          }
-        },
-        "required": ["product_sku", "requested_quantity"]
-      }
-    },
-    {
-      "name": "search_products",
-      "description": "Поиск товаров по названию. Используется для поиска товаров, когда пользователь знает только название, но не знает SKU. Возвращает список найденных товаров с их SKU, которые можно использовать в других инструментах.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "product_name": {
-            "type": "string",
-            "description": "Название товара для поиска (можно частичное, например 'морковь', 'картошка')"
-          },
-          "warehouse_id": {
-            "type": "string",
-            "description": "ID склада (опционально)"
-          }
-        },
-        "required": ["product_name"]
-      }
-    },
-    {
-      "name": "get_reorder_status",
-      "description": "Получает статус заявки на пополнение запасов по ID заявки. Используется для проверки текущего состояния заявки (pending, approved, rejected, completed).",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "request_id": {
-            "type": "string",
-            "description": "ID заявки на пополнение (например, REQ-20251206-001)"
-          }
-        },
-        "required": ["request_id"]
-      }
-    },
-    {
-      "name": "update_reorder_status",
-      "description": "Обновляет статус заявки на пополнение (одобрить, отклонить, завершить). Используется для управления жизненным циклом заявок на пополнение запасов.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "request_id": {
-            "type": "string",
-            "description": "ID заявки"
-          },
-          "status": {
-            "type": "string",
-            "enum": ["pending", "approved", "rejected", "completed"],
-            "description": "Новый статус заявки: 'pending' (ожидает), 'approved' (одобрена), 'rejected' (отклонена), 'completed' (завершена)"
-          },
-          "notes": {
-            "type": "string",
-            "description": "Примечания к изменению статуса (опционально)"
-          }
-        },
-        "required": ["request_id", "status"]
-      }
-    },
-    {
-      "name": "list_reorder_requests",
-      "description": "Получает список заявок на пополнение с возможностью фильтрации по статусу и товару. Используется для просмотра всех заявок или поиска конкретных заявок.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "status": {
-            "type": "string",
-            "description": "Фильтр по статусу (опционально): 'pending', 'approved', 'rejected', 'completed'"
-          },
-          "product_sku": {
-            "type": "string",
-            "description": "Фильтр по артикулу товара (опционально)"
-          },
-          "limit": {
-            "type": "integer",
-            "description": "Максимальное количество заявок (по умолчанию 100)"
-          }
-        },
-        "required": []
-      }
-    },
-    {
-      "name": "create_product",
-      "description": "Создает новый товар в базе данных. Используется для добавления новых товаров в систему учета склада с указанием всех необходимых параметров.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "product_sku": {
-            "type": "string",
-            "description": "Артикул товара (SKU) - уникальный идентификатор"
-          },
-          "product_name": {
-            "type": "string",
-            "description": "Название товара"
-          },
-          "current_quantity": {
-            "type": "integer",
-            "description": "Начальное количество (по умолчанию 0)"
-          },
-          "min_quantity": {
-            "type": "integer",
-            "description": "Минимальный уровень запасов (по умолчанию 0)"
-          },
-          "max_quantity": {
-            "type": "integer",
-            "description": "Максимальный уровень запасов (по умолчанию 0)"
-          },
-          "unit": {
-            "type": "string",
-            "description": "Единица измерения (по умолчанию 'шт'): 'кг', 'шт', 'л' и т.д."
-          },
-          "category": {
-            "type": "string",
-            "description": "Категория товара (опционально)"
-          },
-          "warehouse_id": {
-            "type": "string",
-            "description": "ID склада (по умолчанию 'WH001')"
-          },
-          "description": {
-            "type": "string",
-            "description": "Описание товара (опционально)"
-          }
-        },
-        "required": ["product_sku", "product_name"]
-      }
-    },
-    {
-      "name": "delete_product",
-      "description": "Удаляет товар из базы данных. Используется для удаления товаров, которые больше не используются на складе.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "product_sku": {
-            "type": "string",
-            "description": "Артикул товара для удаления"
-          }
-        },
-        "required": ["product_sku"]
-      }
-    },
-    {
-      "name": "list_products",
-      "description": "Получает список всех товаров с возможностью фильтрации по категории и складу. Используется для просмотра всего каталога товаров или поиска товаров по критериям.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "category": {
-            "type": "string",
-            "description": "Фильтр по категории (опционально)"
-          },
-          "warehouse_id": {
-            "type": "string",
-            "description": "Фильтр по складу (опционально)"
-          },
-          "limit": {
-            "type": "integer",
-            "description": "Максимальное количество товаров (по умолчанию 100)"
-          }
-        },
-        "required": []
+  "name": "get_bitrix_warehouses",
+  "description": "Получение списка всех складов из Битрикс24 с возможностью фильтрации по названию",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "filter_title": {
+        "type": "string",
+        "description": "Фильтр по названию склада (частичное совпадение)"
+      },
+      "active_only": {
+        "type": "boolean",
+        "description": "Только активные склады"
+      },
+      "limit": {
+        "type": "integer",
+        "description": "Максимальное количество складов"
       }
     }
-  ],
-  "a2aCompatibility": true,
-  "mcpProtocol": "1.0"
+  }
+},
+{
+  "name": "get_bitrix_product_stock",
+  "description": "Получение остатков конкретного товара на всех или определенном складе Битрикс24",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "product_sku": {
+        "type": "string",
+        "description": "SKU товара"
+      },
+      "warehouse_id": {
+        "type": "integer",
+        "description": "ID конкретного склада (опционально)"
+      }
+    },
+    "required": ["product_sku"]
+  }
+},
+{
+  "name": "set_bitrix_product_stock",
+  "description": "Установка или обновление остатков товара на конкретном складе в Битрикс24",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "product_sku": {
+        "type": "string",
+        "description": "SKU товара"
+      },
+      "warehouse_id": {
+        "type": "integer",
+        "description": "ID склада"
+      },
+      "quantity": {
+        "type": "number",
+        "description": "Количество (может быть дробным для весовых товаров)"
+      },
+      "reserve_quantity": {
+        "type": "number",
+        "description": "Зарезервированное количество"
+      }
+    },
+    "required": ["product_sku", "warehouse_id", "quantity"]
+  }
+},
+{
+  "name": "create_bitrix_warehouse",
+  "description": "Создание нового склада в Битрикс24 с указанием названия, адреса и описания",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "description": "Название склада"
+      },
+      "address": {
+        "type": "string",
+        "description": "Адрес склада"
+      },
+      "description": {
+        "type": "string",
+        "description": "Описание склада"
+      },
+      "active": {
+        "type": "string",
+        "enum": ["Y", "N"],
+        "description": "Активность склада"
+      }
+    },
+    "required": ["title"]
+  }
+},
+{
+  "name": "sync_all_stock_to_bitrix",
+  "description": "Полная синхронизация всех остатков товаров из MCP системы в склад Битрикс24",
+  "inputSchema": {
+    "type": "object",
+    "properties": {},
+    "required": []
+  }
 }

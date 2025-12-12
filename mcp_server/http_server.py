@@ -7,6 +7,11 @@ from dotenv import load_dotenv
 import uvicorn
 
 from .mcp_tools import (
+    BitrixCreateWarehouseParams,
+    BitrixGetProductStockParams,
+    BitrixGetStockMovementsParams,
+    BitrixGetWarehousesParams,
+    BitrixSetProductStockParams,
     GetInventoryStatusParams,
     UpdateInventoryParams,
     CreateReorderRequestParams,
@@ -17,7 +22,13 @@ from .mcp_tools import (
     CreateProductParams,
     DeleteProductParams,
     ListProductsParams,
+    _create_bitrix_warehouse_impl,
+    _get_bitrix_product_stock_impl,
+    _get_bitrix_stock_movements_impl,
+    _get_bitrix_warehouses_impl,
     _get_inventory_status_impl,
+    _set_bitrix_product_stock_impl,
+    _sync_all_stock_to_bitrix_impl,
     _update_inventory_impl,
     _create_reorder_request_impl,
     _search_products_impl,
@@ -41,6 +52,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Warehouse Inventory MCP Server")
 
 # Добавление кастомных HTTP эндпоинтов для вызова инструментов
+@app.post("/mcp/tools/{tool_name}")
 @app.post("/mcp/tools/{tool_name}")
 async def call_mcp_tool(tool_name: str, request: Request):
     """HTTP эндпоинт для вызова MCP инструментов."""
@@ -99,6 +111,40 @@ async def call_mcp_tool(tool_name: str, request: Request):
             result = await _list_products_impl(tool_params)
             return result.model_dump()
         
+        # Новые инструменты для склада Битрикс24
+        elif tool_name == "get_bitrix_warehouses":
+            tool_params = BitrixGetWarehousesParams(**params)
+            result = await _get_bitrix_warehouses_impl(tool_params)
+            return result
+        
+        elif tool_name == "get_bitrix_product_stock":
+            tool_params = BitrixGetProductStockParams(**params)
+            result = await _get_bitrix_product_stock_impl(tool_params)
+            return result
+        
+        elif tool_name == "set_bitrix_product_stock":
+            tool_params = BitrixSetProductStockParams(**params)
+            result = await _set_bitrix_product_stock_impl(tool_params)
+            return result
+        
+        elif tool_name == "get_bitrix_stock_movements":
+            tool_params = BitrixGetStockMovementsParams(**params)
+            result = await _get_bitrix_stock_movements_impl(tool_params)
+            return result
+        
+        elif tool_name == "create_bitrix_warehouse":
+            tool_params = BitrixCreateWarehouseParams(**params)
+            result = await _create_bitrix_warehouse_impl(tool_params)
+            return result
+        
+        elif tool_name == "sync_all_stock_to_bitrix":
+            result = await _sync_all_stock_to_bitrix_impl()
+            return result
+        
+        elif tool_name == "get_bitrix_store_list":
+            result = await _get_bitrix_store_list_impl()
+            return result
+        
         else:
             raise HTTPException(status_code=404, detail=f"Инструмент {tool_name} не найден")
     
@@ -141,4 +187,3 @@ def run_server():
 
 if __name__ == "__main__":
     run_server()
-

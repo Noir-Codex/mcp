@@ -3,7 +3,7 @@
 import os
 import logging
 from typing import Optional, Dict, Any, List
-from datetime import datetime
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field
@@ -50,6 +50,10 @@ from .database import (
     list_all_products as db_list_all_products,
     update_product as db_update_product
 )
+
+# Импорт модуля Битрикс24
+from .bitrix24.client import bitrix24_client
+from .bitrix24.sync import sync_manager
 
 # Все заявки теперь хранятся в базе данных
 
@@ -126,6 +130,21 @@ class ListProductsParams(BaseModel):
     category: Optional[str] = Field(None, description="Фильтр по категории")
     warehouse_id: Optional[str] = Field(None, description="Фильтр по складу")
     limit: Optional[int] = Field(100, description="Максимальное количество товаров")
+
+
+# BITRIX24 SPECIFIC MODELS
+class BitrixSyncStatusParams(BaseModel):
+    """Параметры для проверки статуса синхронизации."""
+    entity_type: Optional[str] = Field(None, description="Тип сущности: deal, task, product")
+    entity_id: Optional[str] = Field(None, description="ID сущности")
+
+
+class CreateBitrixTaskParams(BaseModel):
+    """Параметры для создания задачи в Битрикс24."""
+    title: str = Field(..., description="Название задачи")
+    description: Optional[str] = Field(None, description="Описание задачи")
+    deadline_days: Optional[int] = Field(3, description="Дедлайн в днях")
+    priority: Optional[str] = Field("medium", description="Приоритет: low, medium, high")
 
 
 # Вспомогательные функции
@@ -362,13 +381,13 @@ async def _get_inventory_status_impl(params: GetInventoryStatusParams) -> Invent
                     status = "in_stock"
                 
                 return InventoryStatus(
-                    product_sku=api_data.get("product_sku", search_sku),
+                    product_sku=api_data.get("product_sku", search_ku),
                     product_name=api_data.get("product_name", f"Товар {search_sku}"),
                     current_quantity=current_qty,
                     min_quantity=min_qty,
                     max_quantity=max_qty,
                     status=status,
-                    last_updated=api_data.get("last_updated", datetime.utcnow().isoformat() + "Z"),
+                    last_updated=api_data.get("last_updated", datetime.now(timezone.utc).isoformat()),
                     warehouse_id=params.warehouse_id or api_data.get("warehouse_id"),
                     unit=api_data.get("unit", "шт")
                 )
@@ -453,7 +472,7 @@ async def _update_inventory_impl(params: UpdateInventoryParams) -> InventoryUpda
                     previous_quantity=api_data.get("previous_quantity", 0),
                     new_quantity=api_data.get("new_quantity", 0),
                     operation_type=params.operation_type,
-                    timestamp=api_data.get("timestamp", datetime.utcnow().isoformat() + "Z"),
+                    timestamp=api_data.get("timestamp", datetime.now(timezone.utc).isoformat()),
                     warehouse_id=params.warehouse_id or api_data.get("warehouse_id")
                 )
         
@@ -483,7 +502,7 @@ async def _update_inventory_impl(params: UpdateInventoryParams) -> InventoryUpda
             previous_quantity=previous_quantity,
             new_quantity=new_quantity,
             operation_type=params.operation_type,
-            timestamp=datetime.utcnow().isoformat() + "Z",
+            timestamp=datetime.now(timezone.utc).isoformat(),
             warehouse_id=params.warehouse_id or product.get("warehouse_id"),
             unit=product.get("unit", "шт")
         )
@@ -507,7 +526,7 @@ async def _create_reorder_request_impl(params: CreateReorderRequestParams) -> Re
             raise ValueError(f"Товар '{params.product_sku}' не найден. Используйте поиск товаров для получения списка доступных товаров.")
         
         # Генерируем уникальный ID заявки
-        date_str = datetime.utcnow().strftime('%Y%m%d')
+        date_str = datetime.now(timezone.utc).strftime('%Y%m%d')
         existing_requests = db_list_reorder_requests(limit=1000)
         # Находим максимальный номер для сегодняшней даты
         max_num = 0
@@ -532,6 +551,27 @@ async def _create_reorder_request_impl(params: CreateReorderRequestParams) -> Re
         
         logger.info(f"Заявка создана в БД: {request_id}")
         
+        # 🔄 СИНХРОНИЗАЦИЯ С БИТРИКС24
+        if bitrix24_client.enabled:
+            try:
+                logger.info(f"Начинаю синхронизацию с Битрикс24 для заявки {request_id}")
+                
+                sync_result = await sync_manager.sync_reorder_request(
+                    request_data=request_data,
+                    product_data=product
+                )
+                
+                if sync_result["status"] == "success":
+                    logger.info(f"✅ Успешная синхронизация с Битрикс24: {sync_result.get('message')}")
+                    logger.info(f"   ID сделки: {sync_result.get('results', {}).get('deal_id')}")
+                    logger.info(f"   ID задачи: {sync_result.get('results', {}).get('task_id')}")
+                else:
+                    logger.warning(f"⚠️  Проблема с синхронизацией: {sync_result.get('message')}")
+                    
+            except Exception as e:
+                logger.error(f"❌ Критическая ошибка при синхронизации с Битрикс24: {str(e)}", exc_info=True)
+                # Не прерываем основной процесс
+        
         return ReorderRequest(
             success=True,
             request_id=request_data["request_id"],
@@ -548,7 +588,6 @@ async def _create_reorder_request_impl(params: CreateReorderRequestParams) -> Re
         raise
 
 
-# Регистрация MCP инструментов
 @mcp.tool()
 async def get_inventory_status(params: GetInventoryStatusParams) -> InventoryStatus:
     """Получает текущее состояние запасов для указанного товара."""
@@ -563,7 +602,7 @@ async def update_inventory(params: UpdateInventoryParams) -> InventoryUpdate:
 
 @mcp.tool()
 async def create_reorder_request(params: CreateReorderRequestParams) -> ReorderRequest:
-    """Создает заявку на пополнение запасов для товаров с низким остатком."""
+    """Создает заявки на пополнение запасов для товаров с низким остатком."""
     return await _create_reorder_request_impl(params)
 
 
@@ -716,6 +755,21 @@ async def _create_product_impl(params: CreateProductParams) -> ProductCreate:
             description=params.description
         )
         
+        # 🔄 СИНХРОНИЗАЦИЯ ТОВАРА С БИТРИКС24
+        if bitrix24_client.enabled:
+            try:
+                logger.info(f"Синхронизация товара {params.product_sku} с каталогом Битрикс24")
+                
+                sync_result = await sync_manager.sync_new_product(product_data=product)
+                
+                if sync_result["status"] == "success":
+                    logger.info(f"✅ Товар синхронизирован с Битрикс24. ID товара: {sync_result.get('product_id')}")
+                else:
+                    logger.warning(f"⚠️  Не удалось синхронизировать товар: {sync_result.get('message')}")
+                    
+            except Exception as e:
+                logger.error(f"Ошибка синхронизации товара: {str(e)}")
+        
         return ProductCreate(
             success=True,
             product_sku=product["product_sku"],
@@ -815,3 +869,167 @@ async def list_products(params: ListProductsParams) -> ProductSearchResult:
     """Получает список всех товаров с возможностью фильтрации по категории и складу."""
     return await _list_products_impl(params)
 
+
+# ============================================
+# BITRIX24 SPECIFIC TOOLS
+# ============================================
+
+
+from .bitrix24.advanced import (
+    warehouse_manager,
+    GetWarehousesParams,
+    GetProductStockParams,
+    SetProductStockParams,
+    GetStockMovementsParams,
+    CreateWarehouseParams
+)
+
+# Модели для новых инструментов
+class BitrixGetWarehousesParams(BaseModel):
+    """Параметры для получения списка складов из Битрикс24."""
+    filter_title: Optional[str] = Field(None, description="Фильтр по названию склада")
+    active_only: Optional[bool] = Field(True, description="Только активные склады")
+    limit: Optional[int] = Field(50, description="Максимальное количество складов")
+
+
+class BitrixGetProductStockParams(BaseModel):
+    """Параметры для получения остатков товара на складах Битрикс24."""
+    product_sku: str = Field(..., description="SKU товара")
+    warehouse_id: Optional[int] = Field(None, description="ID конкретного склада")
+
+
+class BitrixSetProductStockParams(BaseModel):
+    """Параметры для установки остатков товара на складе Битрикс24."""
+    product_sku: str = Field(..., description="SKU товара")
+    warehouse_id: int = Field(..., description="ID склада")
+    quantity: float = Field(..., description="Количество (может быть дробным)")
+    reserve_quantity: Optional[float] = Field(0.0, description="Зарезервированное количество")
+
+
+class BitrixGetStockMovementsParams(BaseModel):
+    """Параметры для получения движений товаров в Битрикс24."""
+    product_sku: Optional[str] = Field(None, description="Фильтр по SKU товара")
+    warehouse_id: Optional[int] = Field(None, description="Фильтр по ID склада")
+    date_from: Optional[str] = Field(None, description="Дата начала в формате YYYY-MM-DD")
+    date_to: Optional[str] = Field(None, description="Дата окончания в формате YYYY-MM-DD")
+    limit: Optional[int] = Field(100, description="Максимальное количество записей")
+
+
+class BitrixCreateWarehouseParams(BaseModel):
+    """Параметры для создания склада в Битрикс24."""
+    title: str = Field(..., description="Название склада")
+    address: Optional[str] = Field(None, description="Адрес склада")
+    description: Optional[str] = Field(None, description="Описание склада")
+    active: Optional[str] = Field("Y", description="Активность: Y/N")
+
+
+# Реализации функций
+async def _get_bitrix_warehouses_impl(params: BitrixGetWarehousesParams) -> Dict[str, Any]:
+    """Получение списка складов из Битрикс24."""
+    return await warehouse_manager.get_warehouses(params)
+
+
+async def _get_bitrix_product_stock_impl(params: BitrixGetProductStockParams) -> Dict[str, Any]:
+    """Получение остатков товара на складах Битрикс24."""
+    return await warehouse_manager.get_product_stock(params)
+
+
+async def _set_bitrix_product_stock_impl(params: BitrixSetProductStockParams) -> Dict[str, Any]:
+    """Установка остатков товара на складе Битрикс24."""
+    return await warehouse_manager.set_product_stock(params)
+
+
+async def _get_bitrix_stock_movements_impl(params: BitrixGetStockMovementsParams) -> Dict[str, Any]:
+    """Получение движений товаров в Битрикс24."""
+    return await warehouse_manager.get_stock_movements(params)
+
+
+async def _create_bitrix_warehouse_impl(params: BitrixCreateWarehouseParams) -> Dict[str, Any]:
+    """Создание склада в Битрикс24."""
+    return await warehouse_manager.create_warehouse(params)
+
+
+async def _sync_all_stock_to_bitrix_impl() -> Dict[str, Any]:
+    """Полная синхронизация остатков из MCP в Битрикс24."""
+    return await warehouse_manager.sync_all_stock_to_bitrix()
+
+
+# Регистрация инструментов MCP
+@mcp.tool()
+async def get_bitrix_warehouses(params: BitrixGetWarehousesParams) -> Dict[str, Any]:
+    """Получение списка складов из Битрикс24."""
+    return await _get_bitrix_warehouses_impl(params)
+
+
+@mcp.tool()
+async def get_bitrix_product_stock(params: BitrixGetProductStockParams) -> Dict[str, Any]:
+    """Получение остатков товара на складах Битрикс24."""
+    return await _get_bitrix_product_stock_impl(params)
+
+
+@mcp.tool()
+async def set_bitrix_product_stock(params: BitrixSetProductStockParams) -> Dict[str, Any]:
+    """Установка остатков товара на складе Битрикс24."""
+    return await _set_bitrix_product_stock_impl(params)
+
+
+@mcp.tool()
+async def get_bitrix_stock_movements(params: BitrixGetStockMovementsParams) -> Dict[str, Any]:
+    """Получение движений товаров в Битрикс24."""
+    return await _get_bitrix_stock_movements_impl(params)
+
+
+@mcp.tool()
+async def create_bitrix_warehouse(params: BitrixCreateWarehouseParams) -> Dict[str, Any]:
+    """Создание склада в Битрикс24."""
+    return await _create_bitrix_warehouse_impl(params)
+
+
+@mcp.tool()
+async def sync_all_stock_to_bitrix() -> Dict[str, Any]:
+    """Полная синхронизация остатков из MCP в Битрикс24."""
+    return await _sync_all_stock_to_bitrix_impl()
+
+
+@mcp.tool()
+async def get_bitrix_store_list() -> Dict[str, Any]:
+    """Простой список складов (для совместимости)."""
+    return await warehouse_manager.get_warehouses(GetWarehousesParams())
+
+
+# Добавляем информацию о складах в создание заявки
+async def _create_reorder_request_with_warehouse_impl(params: CreateReorderRequestParams) -> ReorderRequest:
+    """Создает заявку на пополнение с привязкой к складу Битрикс24."""
+    # Вызываем оригинальную реализацию
+    result = await _create_reorder_request_impl(params)
+    
+    # Если есть информация о складе и интеграция активна
+    if bitrix24_client.enabled and params.warehouse_id:
+        try:
+            # Получаем список складов
+            warehouses = await warehouse_manager.get_warehouses(GetWarehousesParams())
+            
+            if warehouses.get("success"):
+                # Ищем склад по названию или ID
+                target_warehouse = None
+                for wh in warehouses.get("warehouses", []):
+                    if wh.get("title") == params.warehouse_id or str(wh.get("id")) == params.warehouse_id:
+                        target_warehouse = wh
+                        break
+                
+                if target_warehouse:
+                    # Добавляем информацию о складе в результат
+                    result_dict = result.model_dump()
+                    result_dict["bitrix_warehouse"] = {
+                        "id": target_warehouse["id"],
+                        "title": target_warehouse["title"],
+                        "message": f"Склад '{target_warehouse['title']}' найден в Битрикс24"
+                    }
+                    
+                    # Возвращаем обновленный результат
+                    return ReorderRequest(**result_dict)
+                    
+        except Exception as e:
+            logger.warning(f"Не удалось привязать склад Битрикс24: {str(e)}")
+    
+    return result

@@ -10,3 +10,5 @@ ping 127.0.0.1 -n 4 >nul
 echo [2/2] Starting AI agent...
 echo.
 python -m agent.agent
+
+pause
